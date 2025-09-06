@@ -6,6 +6,7 @@ __copyright__ = "Copyright (C) 2013-2022, 2024  Martin Blais"
 __license__ = "GNU GPLv2"
 
 import builtins
+import re
 import datetime
 import enum
 import sys
@@ -703,20 +704,36 @@ def get_entry(posting_or_entry: Directive | TxnPosting) -> Directive:
 # - Close directives should always appear last.
 # This is the rationale for this sorting order.
 SORT_ORDER = {Open: -2, Balance: -1, Document: 1, Close: 2}
+_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$")
+_DEFAULT_ENTRY_TIME = datetime.time(12, 0, 0)
+
+def _parse_hhmm_or_hhmmss(s: str) -> datetime.time:
+    s = s.strip()
+    if not _TIME_RE.match(s):
+        raise ValueError("unsupported time format")
+    parts = s.split(":")
+    if len(parts) == 2:
+        hh, mm = parts; ss = "0"
+    else:
+        hh, mm, ss = parts
+    return datetime.time(int(hh), int(mm), int(ss))
 
 
-def entry_sortkey(entry: Directive) -> tuple[datetime.date, int, int]:
-    """Sort-key for entries. We sort by date, except that checks
-    should be placed in front of every list of entries of that same day,
-    in order to balance linearly.
-
-    Args:
-      entry: An entry instance.
-    Returns:
-      A tuple of (date, integer, integer), that forms the sort key for the
-      entry.
-    """
-    return (entry.date, SORT_ORDER.get(type(entry), 0), entry.meta["lineno"])
+def entry_sortkey(entry):
+    """Sort by (date, type, time?, lineno). time 僅支援 HH:MM[:SS]。"""
+    t = _DEFAULT_ENTRY_TIME
+    meta_time = entry.meta.get("time")
+    if isinstance(meta_time, str):
+        try:
+            t = _parse_hhmm_or_hhmmss(meta_time)
+        except ValueError:
+            pass  # 非支援格式 → 略過，用預設時間
+    return (
+        entry.date,
+        SORT_ORDER.get(type(entry), 0),
+        t,
+        entry.meta.get("lineno", 0),
+    )
 
 
 def sorted(entries: Directives) -> Directives:
@@ -730,21 +747,21 @@ def sorted(entries: Directives) -> Directives:
     return builtins.sorted(entries, key=entry_sortkey)
 
 
-def posting_sortkey(entry: Directive | TxnPosting) -> tuple[datetime.date, int, int]:
-    """Sort-key for entries or TxnPosting instances. We sort by date, except
-    that checks should be placed in front of every list of entries of that same
-    day, in order to balance linearly.
-
-    Args:
-      entry: A TxnPosting or entry instance.
-    Returns:
-      A tuple of (date, integer, integer), that forms the sort key for the
-      TxnPosting or entry.
-    """
-    assert isinstance(entry, (TxnPosting,) + ALL_DIRECTIVES)
-    if isinstance(entry, TxnPosting):
-        entry = entry.txn
-    return (entry.date, SORT_ORDER.get(type(entry), 0), entry.meta["lineno"])
+def posting_sortkey(entry_or_posting):
+    entry = get_entry(entry_or_posting)
+    t = _DEFAULT_ENTRY_TIME
+    meta_time = entry.meta.get("time")
+    if isinstance(meta_time, str):
+        try:
+            t = _parse_hhmm_or_hhmmss(meta_time)
+        except ValueError:
+            pass
+    return (
+        entry.date,
+        SORT_ORDER.get(type(entry), 0),
+        t,
+        entry.meta.get("lineno", 0),
+    )
 
 
 # TODO(blais): Rename 'txns' to 'transactions' for clarity.
